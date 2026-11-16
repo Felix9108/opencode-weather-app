@@ -1,0 +1,12 @@
+{
+  "cities": [
+    {
+      "name": "Houston",
+      "latitude": 29.76328,
+      "longitude": -95.36327,
+      "country": "Estados Unidos"
+    }
+  ],
+  "defaultCity": "Houston",
+  "unit": "fahrenheit"
+}
