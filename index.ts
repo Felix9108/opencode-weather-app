@@ -1,4 +1,17 @@
-const STORAGE_FILE = ".weather.json";
+import { mkdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+
+const configDirectory = process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config");
+const STORAGE_FILE = join(configDirectory, "weather-cli", "weather.json");
+
+const color = {
+  cyan: (text: string) => `\x1b[36m${text}\x1b[0m`,
+  yellow: (text: string) => `\x1b[33m${text}\x1b[0m`,
+  green: (text: string) => `\x1b[32m${text}\x1b[0m`,
+  red: (text: string) => `\x1b[31m${text}\x1b[0m`,
+  muted: (text: string) => `\x1b[90m${text}\x1b[0m`,
+};
 
 type Unit = "celsius" | "fahrenheit";
 
@@ -32,6 +45,15 @@ type WeatherResponse = {
   };
 };
 
+type ForecastResponse = {
+  daily?: {
+    time: string[];
+    temperature_2m_max: number[];
+    temperature_2m_min: number[];
+    weather_code: number[];
+  };
+};
+
 const DEFAULT_DATA: AppData = {
   cities: [],
   defaultCity: null,
@@ -55,13 +77,14 @@ async function loadData(): Promise<AppData> {
 }
 
 async function saveData(data: AppData): Promise<void> {
+  await mkdir(dirname(STORAGE_FILE), { recursive: true });
   await Bun.write(STORAGE_FILE, JSON.stringify(data, null, 2));
 }
 
-async function geocodeCity(query: string): Promise<City | null> {
+export async function geocodeCity(query: string): Promise<City[]> {
   const params = new URLSearchParams({
     name: query,
-    count: "1",
+    count: "5",
     language: "es",
     format: "json",
   });
@@ -70,17 +93,15 @@ async function geocodeCity(query: string): Promise<City | null> {
 
   const data = (await response.json()) as { results?: GeocodingResult[] };
   const result = data.results?.[0];
-  if (!result) return null;
-
-  return {
+  return (data.results ?? []).map((result) => ({
     name: result.name,
     latitude: result.latitude,
     longitude: result.longitude,
     country: result.country,
-  };
+  }));
 }
 
-function weatherDescription(code: number): string {
+export function weatherDescription(code: number): string {
   if (code === 0) return "Despejado";
   if ([1, 2, 3].includes(code)) return "Parcialmente nublado";
   if ([45, 48].includes(code)) return "Niebla";
@@ -107,26 +128,56 @@ async function showWeather(city: City, unit: Unit): Promise<void> {
   if (!current) throw new Error("La API no devolvió datos del clima.");
 
   const symbol = unit === "celsius" ? "°C" : "°F";
-  console.log(`\n  ${city.name}${city.country ? `, ${city.country}` : ""}`);
+  console.log(`\n  ${color.cyan(`${city.name}${city.country ? `, ${city.country}` : ""}`)}`);
   console.log(`  ${weatherDescription(current.weather_code)}`);
-  console.log(`  Temperatura: ${current.temperature_2m}${symbol} (sensación ${current.apparent_temperature}${symbol})`);
+  console.log(`  Temperatura: ${color.yellow(`${current.temperature_2m}${symbol}`)} (sensación ${current.apparent_temperature}${symbol})`);
   console.log(`  Humedad: ${current.relative_humidity_2m}%`);
   console.log(`  Viento: ${current.wind_speed_10m} km/h`);
 }
 
+async function showForecast(city: City, unit: Unit): Promise<void> {
+  const params = new URLSearchParams({
+    latitude: String(city.latitude),
+    longitude: String(city.longitude),
+    daily: "temperature_2m_max,temperature_2m_min,weather_code",
+    forecast_days: "7",
+    temperature_unit: unit,
+    timezone: "auto",
+  });
+  const response = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`);
+  if (!response.ok) throw new Error("No se pudo consultar el pronóstico.");
+
+  const data = (await response.json()) as ForecastResponse;
+  const daily = data.daily;
+  if (!daily) throw new Error("La API no devolvió datos del pronóstico.");
+
+  const symbol = unit === "celsius" ? "°C" : "°F";
+  console.log(`\n  ${color.cyan(`Pronóstico de ${city.name}`)}`);
+  daily.time.forEach((date, index) => {
+    const day = new Intl.DateTimeFormat("es", { weekday: "short", day: "numeric", month: "short" }).format(new Date(`${date}T12:00:00`));
+    const max = daily.temperature_2m_max[index];
+    const min = daily.temperature_2m_min[index];
+    const code = daily.weather_code[index];
+    if (max === undefined || min === undefined || code === undefined) return;
+    console.log(`  ${day}: ${weatherDescription(code)} | ${color.yellow(`${max}${symbol}`)} / ${min}${symbol}`);
+  });
+}
+
 function printMenu(data: AppData): void {
   console.clear();
-  console.log("════════════════════════════════════════");
-  console.log("             WEATHER CLI");
-  console.log("════════════════════════════════════════");
+  console.log(color.cyan("════════════════════════════════════════"));
+  console.log(color.cyan("             WEATHER CLI"));
+  console.log(color.cyan("════════════════════════════════════════"));
   console.log(`  1. Clima de ciudad default${data.defaultCity ? ` (${data.defaultCity})` : ""}`);
   console.log(`  2. Clima de todas las ciudades (${data.cities.length})`);
   console.log("  3. Buscar y agregar ciudad");
   console.log("  4. Eliminar ciudad");
   console.log("  5. Establecer ciudad default");
+  console.log("  6. Pronóstico de 7 días");
+  console.log("  7. Pronóstico de todas las ciudades");
   console.log(`  8. Ajustes (°${data.unit === "celsius" ? "C" : "F"})`);
   console.log("  9. Salir");
-  console.log("════════════════════════════════════════");
+  console.log(color.cyan("════════════════════════════════════════"));
 }
 
 function chooseCity(data: AppData, message: string): City | null {
@@ -156,20 +207,43 @@ async function addCity(data: AppData): Promise<void> {
   const query = prompt("\n  Ingresa una ciudad: ")?.trim();
   if (!query) return;
 
-  const city = await geocodeCity(query);
+  console.log(color.muted("  Buscando ubicaciones..."));
+  const results = await geocodeCity(query);
+  if (results.length === 0) {
+    console.log(color.red("  No se encontró esa ciudad."));
+    return;
+  }
+
+  console.log("\n  Resultados encontrados:");
+  results.forEach((result, index) => console.log(`  ${index + 1}. ${result.name}${result.country ? `, ${result.country}` : ""}`));
+  const selected = Number(prompt("  Selecciona una ubicación (0 para cancelar): ")) - 1;
+  if (selected < 0) return;
+  const city = results[selected];
   if (!city) {
-    console.log("  No se encontró esa ciudad.");
+    console.log(color.red("  Selección no válida."));
     return;
   }
   if (data.cities.some((savedCity) => savedCity.name.toLowerCase() === city.name.toLowerCase())) {
-    console.log("  Esa ciudad ya está guardada.");
+    console.log(color.red("  Esa ciudad ya está guardada."));
     return;
   }
 
   data.cities.push(city);
   if (!data.defaultCity) data.defaultCity = city.name;
   await saveData(data);
-  console.log(`  ${city.name} fue agregada correctamente.`);
+  console.log(color.green(`  ${city.name} fue agregada correctamente.`));
+}
+
+async function withLoading<T>(message: string, task: () => Promise<T>): Promise<T> {
+  process.stdout.write(color.muted(`  ${message}`));
+  try {
+    const result = await task();
+    console.log(color.green(" listo"));
+    return result;
+  } catch (error) {
+    console.log(color.red(" error"));
+    throw error;
+  }
 }
 
 async function main(): Promise<void> {
@@ -183,10 +257,10 @@ async function main(): Promise<void> {
       if (option === "1") {
         const city = data.cities.find((savedCity) => savedCity.name === data.defaultCity);
         if (!city) console.log("\n  Primero agrega una ciudad.");
-        else await showWeather(city, data.unit);
+        else await withLoading("Consultando clima...", () => showWeather(city, data.unit));
       } else if (option === "2") {
         if (data.cities.length === 0) console.log("\n  Primero agrega una ciudad.");
-        else for (const city of data.cities) await showWeather(city, data.unit);
+        else for (const city of data.cities) await withLoading(`Consultando ${city.name}...`, () => showWeather(city, data.unit));
       } else if (option === "3") {
         await addCity(data);
       } else if (option === "4") {
@@ -204,6 +278,13 @@ async function main(): Promise<void> {
           await saveData(data);
           console.log(`  ${city.name} es ahora tu ciudad default.`);
         }
+      } else if (option === "6") {
+        const city = data.cities.find((savedCity) => savedCity.name === data.defaultCity);
+        if (!city) console.log("\n  Primero agrega una ciudad.");
+        else await withLoading("Consultando pronóstico...", () => showForecast(city, data.unit));
+      } else if (option === "7") {
+        if (data.cities.length === 0) console.log("\n  Primero agrega una ciudad.");
+        else for (const city of data.cities) await withLoading(`Consultando pronóstico de ${city.name}...`, () => showForecast(city, data.unit));
       } else if (option === "8") {
         data.unit = data.unit === "celsius" ? "fahrenheit" : "celsius";
         await saveData(data);
@@ -222,4 +303,4 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+if (import.meta.main) await main();
