@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { geocodeCity, weatherDescription } from "./index.ts";
+import { searchCities } from "./src/api/geocoding.ts";
+import { weatherDescription } from "./src/utils/format.ts";
 
 test("traduce códigos meteorológicos", () => {
   expect(weatherDescription(0)).toBe("Despejado");
@@ -18,7 +19,7 @@ test("mapea múltiples resultados de geocodificación", async () => {
     }))) as unknown as typeof fetch;
 
   try {
-    const cities = await geocodeCity("Springfield");
+    const cities = await searchCities("Springfield");
     expect(cities).toHaveLength(2);
     expect(cities[1]?.longitude).toBe(-72.59);
   } finally {
