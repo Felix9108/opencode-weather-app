@@ -3,8 +3,8 @@ import { dirname } from "node:path";
 import type { AppData } from "../types/City.ts";
 import { defaultData, storageFile } from "../utils/constants.ts";
 
-export async function loadData(): Promise<AppData> {
-  const file = Bun.file(storageFile);
+export async function loadData(filePath = storageFile): Promise<AppData> {
+  const file = Bun.file(filePath);
   if (!(await file.exists())) return { ...defaultData, cities: [] };
 
   try {
@@ -19,7 +19,7 @@ export async function loadData(): Promise<AppData> {
   }
 }
 
-export async function saveData(data: AppData): Promise<void> {
-  await mkdir(dirname(storageFile), { recursive: true });
-  await Bun.write(storageFile, JSON.stringify(data, null, 2));
+export async function saveData(data: AppData, filePath = storageFile): Promise<void> {
+  await mkdir(dirname(filePath), { recursive: true });
+  await Bun.write(filePath, JSON.stringify(data, null, 2));
 }
